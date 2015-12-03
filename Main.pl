@@ -2,13 +2,19 @@ use DBI;
 use Digest::MD5;
 use POSIX qw(strftime);
 use Getopt::Std;
-
-# TEST IN Branch SPRINT 01
+#use GnuPG;
+use Term::ReadKey;
+use File::Path;
+#use Config::Properties;
 
 # Global vars
 our $nodb; # Object used to store the connection to the DB
+our $passphrase; # Will store the passphrase for the GPG Key
+our $gpgKeyId; # Will store the KeyID
 our %config; # Configuration loaded from "Config.pl" (Hardcoded for the moment)
 our %opts;
+#our $envFileSep = System.getProperty("path.separator");
+our $envFileSep = "/";
 
 # Declare the subroutine that will be used below.
 sub Main; # Will be called in every situation
@@ -18,6 +24,7 @@ sub Normal; # Will be used in normal running (Init already done)
 sub Normal1Dir; # Is used by Normal to do the jobs for one dir
 sub Normal1File; # Is used by Normal1Dir to work on a specific file
 sub InsertFile; # Is used to handle a new file
+sub CryptFile; # Is used to crypt a file before insertion into db
 sub InsertFileIntoDB; # Is used to insert a file in the DB (usually called by InsertFile)
 sub UpdateFile; # Is used to update a file
 sub UpdateFileInDB; # Is used to update an entry each time the checksum is modified  (usually called by UpdateFile)
@@ -69,6 +76,8 @@ sub Normal1Dir  {
 
 	my $wIdDir; # Should be initialized by checking in DB. To be corrected
 
+
+
 	# Insert if not present the directory to backup
 	my $dbCheckDir = "SELECT ID_Dir FROM DIRECTORIES WHERE DirName='".$wDir."';";
 	my $linkCheckDir = $nodb->prepare($dbCheckDir);
@@ -81,7 +90,6 @@ sub Normal1Dir  {
 		my $linkReCheckDir = $nodb->prepare($dbCheckDir);
 		$linkReCheckDir->execute;
 		$wIdDir=$linkReCheckDir->fetch->[0];
-		print ""
 	} else {
 		$wIdDir= $rowCheckDir->[0];
 	}
@@ -89,6 +97,9 @@ sub Normal1Dir  {
 	chdir($wDir);
 	my %listfiles = `find . -type f -print`;
 	
+	# Create the target directory 
+	mkpath ($config{'tgtdir'}.$envFileSep.$config{'dirprefix'}.$wIdDir.$envFileSep.$wIdBackup);
+		
 	foreach my $v (values(%listfiles)) {
 		chomp($v);
 		stat($v);
@@ -138,7 +149,32 @@ sub InsertFile {
 	my $wIdDir = $_[3]; # Argument 4 is Directory ID
 	my $wChecksum = $_[4]; # Argument 5 is Checksum
 
+	#CryptFile $filename, $wIdDir, $wChecksum, $wIdBackup;
 	InsertFileIntoDB $filename, $wDir, $wIdBackup, $wIdDir, $wChecksum;
+}
+
+sub CryptFile {
+	my $filename = $_[0]; # Argument 1 is Filename
+	my $wIdDir = $_[1]; # Argument 2 is Backed up Directory ID
+	my $wChecksum = $_[2]; # Argument 3 is Checksum
+	my $wIdBackup = $_[3]; # Argument 4 is the backup ID
+	
+	my $wDirBackup = $config{'tgtdir'}.$envFileSep.$config{'dirprefix'}.$wIdDir.$envFileSep.$wIdBackup;
+	
+	my $targetEncFile = $config{'tmpdir'}.$envFileSep.$wChecksum.".gpg";
+	my $targetSigFile = $wDirBackup.$envFileSep.$wChecksum.".gpg.asc";
+	
+	my $gpg = new GnuPG;
+	$gpg->encrypt(	plaintext => $filename, 
+					output => $targetEncFile,  
+					recipient => $gpgKeyId);
+
+	$gpg->sign( plaintext => $targetEncFile,
+				output => $targetSigFile,
+				armor => 1,
+				passphrase => $passphrase);
+
+	unlink $targetEncFile;
 }
 
 sub InsertFileIntoDB {
@@ -189,6 +225,17 @@ sub Main {
 	if (defined $opts{'n'}) {
 		Init;
 	}
+	
+	# Get Key ID 
+	print "Type in your key id: ";
+	chomp($gpgKeyId = <STDIN>);
+	
+	# Get Password (no echo)
+	print "Type your password: ";
+	ReadMode('noecho'); # don't echo
+	chomp($passphrase = <STDIN>);
+	ReadMode(0);        # back to normal
+	print "\n";
 	
 	Normal;
 	$nodb->disconnect;

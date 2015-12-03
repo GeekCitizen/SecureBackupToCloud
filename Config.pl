@@ -4,5 +4,6 @@
 
 srcdir		=> ["/Users/ludo/Public/Development/workspace", "/Users/ludo/Documents/script"],
 tgtdir		=> '/Users/ludo/Documents/script.dest',
-sqldb		=> "totoa.db",
+tmpdir		=> '/tmp/',
+sqldb		=> "/tmp/mydb.db",
 dirprefix	=> "SRCDIR-",

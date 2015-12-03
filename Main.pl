@@ -3,6 +3,8 @@ use Digest::MD5;
 use POSIX qw(strftime);
 use Getopt::Std;
 
+# TEST IN Branch SPRINT 01
+
 # Global vars
 our $nodb; # Object used to store the connection to the DB
 our %config; # Configuration loaded from "Config.pl" (Hardcoded for the moment)

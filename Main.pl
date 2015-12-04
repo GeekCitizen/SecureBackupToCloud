@@ -10,7 +10,6 @@ use File::Path;
 # Global vars
 our $nodb; # Object used to store the connection to the DB
 our $passphrase; # Will store the passphrase for the GPG Key
-our $gpgKeyId; # Will store the KeyID
 our %config; # Configuration loaded from "Config.pl" (Hardcoded for the moment)
 our %opts;
 #our $envFileSep = System.getProperty("path.separator");
@@ -24,12 +23,13 @@ sub Normal; # Will be used in normal running (Init already done)
 sub Normal1Dir; # Is used by Normal to do the jobs for one dir
 sub Normal1File; # Is used by Normal1Dir to work on a specific file
 sub InsertFile; # Is used to handle a new file
-sub CryptFile; # Is used to crypt a file before insertion into db
+sub AddFileInRepository; # Is used to crypt a file into a repository and update the repository
+sub CreateNewDirInRepo; # Is used to create a new directory in the repository
 sub InsertFileIntoDB; # Is used to insert a file in the DB (usually called by InsertFile)
 sub UpdateFile; # Is used to update a file
 sub UpdateFileInDB; # Is used to update an entry each time the checksum is modified  (usually called by UpdateFile)
 
-getopts('n', \%opts) or printHelp;
+getopts('gn', \%opts) or printHelp;
 Main;
 
 sub Init () {
@@ -37,8 +37,10 @@ sub Init () {
 
 	$dbCreationStatements[0]="";
 	$dbCreationStatements[1]="CREATE TABLE FILES (ID_File integer primary key autoincrement, ID_Directory integer, Filename text, HASH varchar(32), ID_Backup integer);";
-	$dbCreationStatements[2]="CREATE TABLE BACKUPS (ID_Backup integer primary key autoincrement, Date text, Comment text);";
-	$dbCreationStatements[3]="CREATE TABLE DIRECTORIES (ID_Dir integer primary key autoincrement, DirName text);";
+	$dbCreationStatements[2]="CREATE TABLE REPOFILES (ID_HASH integer primary key autoincrement, HASH varchar(32), Counter integer);";
+	$dbCreationStatements[3]="CREATE TABLE REPODIRS (ID_Dir integer primary key autoincrement, Counter integer);";
+	$dbCreationStatements[4]="CREATE TABLE BACKUPS (ID_Backup integer primary key autoincrement, Date text, Comment text);";
+	$dbCreationStatements[5]="CREATE TABLE DIRECTORIES (ID_Dir integer primary key autoincrement, DirName text);";
 
 	my $req;
 	while (defined ($req = shift @dbCreationStatements)) {
@@ -46,6 +48,7 @@ sub Init () {
 		$link->execute();
 	}
 	
+	CreateNewDirInRepo 1;
 }
 
 sub Normal {
@@ -75,8 +78,6 @@ sub Normal1Dir  {
 	my $wIdBackup = $_[1]; # Argument 2 is Backup ID
 
 	my $wIdDir; # Should be initialized by checking in DB. To be corrected
-
-
 
 	# Insert if not present the directory to backup
 	my $dbCheckDir = "SELECT ID_Dir FROM DIRECTORIES WHERE DirName='".$wDir."';";
@@ -149,32 +150,75 @@ sub InsertFile {
 	my $wIdDir = $_[3]; # Argument 4 is Directory ID
 	my $wChecksum = $_[4]; # Argument 5 is Checksum
 
-	#CryptFile $filename, $wIdDir, $wChecksum, $wIdBackup;
-	InsertFileIntoDB $filename, $wDir, $wIdBackup, $wIdDir, $wChecksum;
+	my $encryption = AddFileInRepository $filename, $wIdDir, $wChecksum, $wIdBackup, $wDir;
+	print "Encryption var : $encryption. ";
+	if ($encryption == 0) {
+		InsertFileIntoDB $filename, $wDir, $wIdBackup, $wIdDir, $wChecksum;	
+	} else {
+		my $tmpDir = $config{'tgtdir'}.$envFileSep.$config{'dirprefix'}.$wIdDir.$envFileSep.$wIdBackup;
+		print "Will not insert $filename. Error while crypting to $wChecksum.gpg in $tmpDir\n";
+	}
 }
 
-sub CryptFile {
+sub AddFileInRepository {
 	my $filename = $_[0]; # Argument 1 is Filename
 	my $wIdDir = $_[1]; # Argument 2 is Backed up Directory ID
 	my $wChecksum = $_[2]; # Argument 3 is Checksum
 	my $wIdBackup = $_[3]; # Argument 4 is the backup ID
-	
-	my $wDirBackup = $config{'tgtdir'}.$envFileSep.$config{'dirprefix'}.$wIdDir.$envFileSep.$wIdBackup;
-	
-	my $targetEncFile = $config{'tmpdir'}.$envFileSep.$wChecksum.".gpg";
-	my $targetSigFile = $wDirBackup.$envFileSep.$wChecksum.".gpg.asc";
-	
-	my $gpg = new GnuPG;
-	$gpg->encrypt(	plaintext => $filename, 
-					output => $targetEncFile,  
-					recipient => $gpgKeyId);
+	my $wDir = $_[4]; # Argument 5 is the sourcefile directory
 
-	$gpg->sign( plaintext => $targetEncFile,
-				output => $targetSigFile,
-				armor => 1,
-				passphrase => $passphrase);
+	my $returnValue = 0; # By default, everything will be fine :)
 
-	unlink $targetEncFile;
+	# Get the the current counter of the hash
+	my $dbReqGetHashCounter = "SELECT Counter FROM REPOFILES WHERE HASH='".$wChecksum."';";
+	my $linkGetHashCounter = $nodb->prepare($dbReqGetHashCounter);
+	$linkGetHashCounter->execute;
+	if (my $rowReqGetHashCounter = $linkGetHashCounter->fetch) {
+		# Here, the HASH already exist in one subdir
+		my $newCounter = $rowReqGetHashCounter->[0] + 1;
+		my $dbReqUpdateCounter = "UPDATE REPOFILES SET Counter=".$newCounter." WHERE HASH='".$wChecksum."';";
+		my $linkUpdateCounter = $nodb->prepare($dbReqUpdateCounter);
+		$linkUpdateCounter->execute;
+	} else {
+		# Here, the HASH does not exist at the moment. Let's create it
+		my $dbReqGetNbFilesInDir = "SELECT r.ID_Dir, r.Counter FROM REPODIRS as r, sqlite_sequence as s WHERE s.name='REPODIRS' AND s.seq=r.ID_Dir;";
+		my $linkGetNbFilesInDir = $nodb->prepare($dbReqGetNbFilesInDir);
+		$linkGetNbFilesInDir->execute;
+		my $rowReqGetNbFilesInDir = $linkGetNbFilesInDir->fetch;
+		my $newDirCounter = $rowReqGetNbFilesInDir->[1] + 1;
+		my $currentDirId = $rowReqGetNbFilesInDir->[0];
+		if ($newDirCounter > $config{'MaxFilesPerDirInRepo'}) {
+			# Here, we need to create a new subdir
+			$currentDirId++;
+			CreateNewDirInRepo $currentDirId;
+		}
+
+		# Define env for backup
+		my $wDirBackup = $config{'tgtdir'}.$envFileSep.$currentDirId.$envFileSep;
+		my $sourceFullFilename = $wDir.$envFileSep.$filename;
+		my $targetEncSigFile = $wDirBackup.$envFileSep.$wChecksum.".gpg";
+			
+		# Encrypt file
+		my $gpgEncCmd = "gpg -se -r ".$config{'gpgKeyId'}." -u ".$config{'gpgKeyId'}." -o '".$targetEncSigFile."' '".$sourceFullFilename."'";
+		$returnValue = system $gpgEncCmd;
+		my $dbReqInsertFileHash = "INSERT INTO REPOFILES(HASH, Counter) VALUES ('".$wChecksum."', 1);";
+		my $linkInsertFileHash = $nodb->prepare($dbReqInsertFileHash);
+		$linkInsertFileHash->execute;
+
+		# , we update the count of files in the directory
+		my $dbReqUpdateDirInRepo = "UPDATE REPODIRS SET Counter = ".$newDirCounter." WHERE ID_Dir='".$currentDirId."';";
+		my $linkUpdateDirInRepo = $nodb->prepare($dbReqUpdateDirInRepo);
+		$linkUpdateDirInRepo->execute;
+	}
+	return $returnValue;
+}
+
+sub CreateNewDirInRepo {
+	mkpath ($config{'tgtdir'}.$envFileSep.$_[0]);
+	
+	my $dbReqAddRepoDir = "INSERT INTO REPODIRS('Counter') VALUES (0);";
+	my $linkAddRepoDir = $nodb->prepare($dbReqAddRepoDir);
+	$linkAddRepoDir->execute;
 }
 
 sub InsertFileIntoDB {
@@ -226,22 +270,21 @@ sub Main {
 		Init;
 	}
 	
-	# Get Key ID 
-	print "Type in your key id: ";
-	chomp($gpgKeyId = <STDIN>);
-	
 	# Get Password (no echo)
-	print "Type your password: ";
-	ReadMode('noecho'); # don't echo
-	chomp($passphrase = <STDIN>);
-	ReadMode(0);        # back to normal
-	print "\n";
+	if (defined $opts{'g'}) {
+		print "Type your password: ";
+		ReadMode('noecho'); # don't echo
+		chomp($passphrase = <STDIN>);
+		ReadMode(0);        # back to normal
+		print "\n";
+	}
 	
 	Normal;
 	$nodb->disconnect;
 }
 
 sub printHelp {
-	print "Only use -n to init DB\n";
+	print "-n : init a new database scheme. Warning : using this option on a already initialized db will make the program fail.\n";
+	print "-g : tells the program to request the password. (This option does alter the program's behavior in the current version. Please use a GPG Agent for the moment.)\n";
 	die;
 }

@@ -32,6 +32,8 @@ sub printVerbose;
 sub printMsgDB;
 sub printMsgL1;
 sub printMsgSystem;
+sub SecureDB; # At the end, securize database
+sub UnsecureDB; # At the beginning, use the existing DB
 
 getopts('gn', \%opts) or printHelp;
 Main;
@@ -53,6 +55,31 @@ sub Init () {
 	}
 	
 	CreateNewDirInRepo 1;
+}
+
+sub UnsecureDB {
+	my $dbDecCmd = "gpg --decrypt -o ".$config{'sqldb'}." ".$config{'tgtdir'}.$envFileSep.$config{'sqlEncDb'}.".gpg";
+	printMsgL1 "Unsecuring DB.\n";
+	my $ret = system($dbDecCmd);
+	printMsgL1 "Return code in UnsecureDB : ".$ret;
+	
+	if ($ret != 0) {
+		die ("Error while extracting DB. Please check your db.\n");	
+	}
+}
+
+sub SecureDB {
+	my $dbEncCmd = "gpg -se -r ".$config{'gpgKeyId'}." -u ".$config{'gpgKeyId'}." -o ".$config{'tgtdir'}.$envFileSep.$config{'sqlEncDb'}.".gpg ".$config{'sqldb'};
+	printMsgL1 "Securing DB.\n";
+	my $ret = system($dbEncCmd);
+	printMsgL1 "Return code in SecureDB : ".$ret;
+	
+	if ($ret != 0) {
+		die ("Error while securing DB. Please check your db.\n");
+	}
+
+	printMsgL1 "Removing unsecured DB.\n";
+	unlink $config{'sqldb'};
 }
 
 sub printVerbose {
@@ -297,6 +324,11 @@ sub Main {
 	
 	%config = do "Config.pl";
 
+	# Get DB from repository
+	if (! defined $opts{'n'}) {
+		UnsecureDB;
+	}
+	
 	# Initialize DB Connection
 	$nodb = DBI->connect("dbi:SQLite:dbname=".$config{sqldb},"","");
 	
@@ -316,6 +348,9 @@ sub Main {
 	
 	Normal;
 	$nodb->disconnect;
+	
+	# Secure the DB
+	SecureDB;
 }
 
 sub printHelp {

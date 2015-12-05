@@ -1,0 +1,6 @@
+srcdir					=> ["/SOURCE-DIRECTORY-01", "/SOURCE-DIRECTORY-02"],
+tgtdir					=> '/PATH-TO-DESTINATION-DIRECTORY',
+sqldb					=> "/TEMPORARY-FILE",
+sqlEncDb				=> "vault",
+gpgKeyId				=> "YOUR-KEY-ID",
+MaxFilesPerDirInRepo 	=> "1024",

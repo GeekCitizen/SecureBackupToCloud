@@ -28,6 +28,10 @@ sub CreateNewDirInRepo; # Is used to create a new directory in the repository
 sub InsertFileIntoDB; # Is used to insert a file in the DB (usually called by InsertFile)
 sub UpdateFile; # Is used to update a file
 sub UpdateFileInDB; # Is used to update an entry each time the checksum is modified  (usually called by UpdateFile)
+sub printVerbose;
+sub printMsgDB;
+sub printMsgL1;
+sub printMsgSystem;
 
 getopts('gn', \%opts) or printHelp;
 Main;
@@ -50,6 +54,23 @@ sub Init () {
 	
 	CreateNewDirInRepo 1;
 }
+
+sub printVerbose {
+	print $_[0]."\n";
+}
+
+sub printMsgDB {
+	#printVerbose "DB Request : ".$_[0];
+}
+
+sub printMsgL1 {
+	#printVerbose "Verbosity 1 Msg : ".$_[0];
+}
+
+sub printMsgSystem {
+	# Do whatever you want
+}
+
 
 sub Normal {
 	my $idBackup;
@@ -151,7 +172,7 @@ sub InsertFile {
 	my $wChecksum = $_[4]; # Argument 5 is Checksum
 
 	my $encryption = AddFileInRepository $filename, $wIdDir, $wChecksum, $wIdBackup, $wDir;
-	print "Encryption var : $encryption. ";
+	#print "Encryption var : $encryption. ";
 	if ($encryption == 0) {
 		InsertFileIntoDB $filename, $wDir, $wIdBackup, $wIdDir, $wChecksum;	
 	} else {
@@ -170,27 +191,36 @@ sub AddFileInRepository {
 	my $returnValue = 0; # By default, everything will be fine :)
 
 	# Get the the current counter of the hash
+	printMsgL1 "Adding file '".$filename."' with HASH '".$wChecksum;
 	my $dbReqGetHashCounter = "SELECT Counter FROM REPOFILES WHERE HASH='".$wChecksum."';";
+	printMsgDB $dbReqGetHashCounter;
 	my $linkGetHashCounter = $nodb->prepare($dbReqGetHashCounter);
 	$linkGetHashCounter->execute;
 	if (my $rowReqGetHashCounter = $linkGetHashCounter->fetch) {
 		# Here, the HASH already exist in one subdir
+		printMsgL1 "File is already in DB.";
 		my $newCounter = $rowReqGetHashCounter->[0] + 1;
 		my $dbReqUpdateCounter = "UPDATE REPOFILES SET Counter=".$newCounter." WHERE HASH='".$wChecksum."';";
+		printMsgDB $dbReqUpdateCounter;
 		my $linkUpdateCounter = $nodb->prepare($dbReqUpdateCounter);
 		$linkUpdateCounter->execute;
 	} else {
 		# Here, the HASH does not exist at the moment. Let's create it
+		printMsgL1 "File is not in repository";
 		my $dbReqGetNbFilesInDir = "SELECT r.ID_Dir, r.Counter FROM REPODIRS as r, sqlite_sequence as s WHERE s.name='REPODIRS' AND s.seq=r.ID_Dir;";
+		printMsgDB $dbReqGetNbFilesInDir;
 		my $linkGetNbFilesInDir = $nodb->prepare($dbReqGetNbFilesInDir);
 		$linkGetNbFilesInDir->execute;
 		my $rowReqGetNbFilesInDir = $linkGetNbFilesInDir->fetch;
-		my $newDirCounter = $rowReqGetNbFilesInDir->[1] + 1;
 		my $currentDirId = $rowReqGetNbFilesInDir->[0];
+		my $newDirCounter = $rowReqGetNbFilesInDir->[1] + 1;
+		printMsgL1 "Current Dir ID : ".$currentDirId;
+		printMsgL1 "Future Dir Counter : ".$newDirCounter;
 		if ($newDirCounter > $config{'MaxFilesPerDirInRepo'}) {
 			# Here, we need to create a new subdir
 			$currentDirId++;
 			CreateNewDirInRepo $currentDirId;
+			$newDirCounter = 1;
 		}
 
 		# Define env for backup
@@ -200,13 +230,16 @@ sub AddFileInRepository {
 			
 		# Encrypt file
 		my $gpgEncCmd = "gpg -se -r ".$config{'gpgKeyId'}." -u ".$config{'gpgKeyId'}." -o '".$targetEncSigFile."' '".$sourceFullFilename."'";
+		printMsgSystem $gpgEncCmd;
 		$returnValue = system $gpgEncCmd;
 		my $dbReqInsertFileHash = "INSERT INTO REPOFILES(HASH, Counter) VALUES ('".$wChecksum."', 1);";
+		printMsgDB $dbReqInsertFileHash;
 		my $linkInsertFileHash = $nodb->prepare($dbReqInsertFileHash);
 		$linkInsertFileHash->execute;
 
 		# , we update the count of files in the directory
 		my $dbReqUpdateDirInRepo = "UPDATE REPODIRS SET Counter = ".$newDirCounter." WHERE ID_Dir='".$currentDirId."';";
+		printMsgDB $dbReqUpdateDirInRepo;
 		my $linkUpdateDirInRepo = $nodb->prepare($dbReqUpdateDirInRepo);
 		$linkUpdateDirInRepo->execute;
 	}
@@ -214,9 +247,11 @@ sub AddFileInRepository {
 }
 
 sub CreateNewDirInRepo {
+	printMsgL1 "New Directory Created. ID : ".$_[0];
 	mkpath ($config{'tgtdir'}.$envFileSep.$_[0]);
 	
 	my $dbReqAddRepoDir = "INSERT INTO REPODIRS('Counter') VALUES (0);";
+	printMsgDB $dbReqAddRepoDir;
 	my $linkAddRepoDir = $nodb->prepare($dbReqAddRepoDir);
 	$linkAddRepoDir->execute;
 }

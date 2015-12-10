@@ -35,7 +35,8 @@ sub printMsgSystem;
 sub SecureDB; # At the end, securize database
 sub UnsecureDB; # At the beginning, use the existing DB
 
-getopts('gn', \%opts) or printHelp;
+#getopts('gn', \%opts) or printHelp;
+getopts('g', \%opts) or printHelp;
 Main;
 
 sub Init () {

@@ -66,9 +66,11 @@ sub UnsecureDB {
 	if ($ret != 0) {
 		die ("Error while extracting DB. Please check your db.\n");	
 	}
+	
 }
 
 sub SecureDB {
+	unlink $config{'tgtdir'}.$envFileSep.$config{'sqlEncDb'}.".gpg";
 	my $dbEncCmd = "gpg -se -r ".$config{'gpgKeyId'}." -u ".$config{'gpgKeyId'}." -o ".$config{'tgtdir'}.$envFileSep.$config{'sqlEncDb'}.".gpg ".$config{'sqldb'};
 	printMsgL1 "Securing DB.\n";
 	my $ret = system($dbEncCmd);
@@ -324,16 +326,27 @@ sub Main {
 	
 	%config = do "Config.pl";
 
-	# Get DB from repository
-	if (! defined $opts{'n'}) {
-		UnsecureDB;
+	{
+		my $testDBEncPath = $config{'tgtdir'}.$envFileSep.$config{'sqlEncDb'}.".gpg";		
+		if (defined $opts{'n'}) {
+			stat($testDBEncPath);
+			if (-f _) {
+				die ("Encrypted database already exist. Check if normal and remove option '-n'");
+			}
+		} else {
+			stat($testDBEncPath);
+			if (-f _) {
+				# Get DB from repository
+				UnsecureDB;
+			} else {
+				die ("You should specify option '-n' as specified Encrypted database does not exist");
+			}
+		}
 	}
-	
+
 	# Initialize DB Connection
-	$nodb = DBI->connect("dbi:SQLite:dbname=".$config{sqldb},"","");
-	
-	
-	if (defined $opts{'n'}) {
+	$nodb = DBI->connect("dbi:SQLite:dbname=".$config{sqldb},"","") or die ("Error DB");
+	if (defined $opts{'n'}) {		
 		Init;
 	}
 	
@@ -346,7 +359,7 @@ sub Main {
 		print "\n";
 	}
 	
-	Normal;
+	Normal; # Let's go
 	$nodb->disconnect;
 	
 	# Secure the DB
@@ -355,6 +368,6 @@ sub Main {
 
 sub printHelp {
 	print "-n : init a new database scheme. Warning : using this option on a already initialized db will make the program fail.\n";
-	print "-g : tells the program to request the password. (This option does alter the program's behavior in the current version. Please use a GPG Agent for the moment.)\n";
+	# print "-g : tells the program to request the password. (This option does alter the program's behavior in the current version. Please use a GPG Agent for the moment.)\n";
 	die;
 }
